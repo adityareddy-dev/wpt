@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Resource Timing for network-loaded lazy images</title>
+<link rel="help" href="https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-responseend">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script src="/common/utils.js"></script>
+<body>
+<script>
+for (const mode of ['eager', 'lazy', 'lazy-to-eager']) {
+  promise_test(async t => {
+    const url = new URL('resources/blue.png', location.href);
+    url.searchParams.set('id', token());
+    // Keep the body pending after the response headers arrive.
+    url.searchParams.set('pipe', 'header(Cache-Control,no-store)|trickle(d1)');
+
+    const image = document.createElement('img');
+    image.loading = mode === 'eager' ? 'eager' : 'lazy';
+    image.width = image.height = 10;
+    image.style = 'position: fixed; top: 0; left: 0';
+    t.add_cleanup(() => image.remove());
+    const loaded = new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error('Image failed to load'));
+    });
+    image.src = url.href;
+    document.body.append(image);
+
+    if (mode === 'lazy-to-eager') {
+      await new Promise(resolve => t.step_timeout(resolve, 0));
+      image.loading = 'eager';
+    }
+    await loaded;
+    assert_true(image.complete, 'The image has finished loading');
+    assert_greater_than(image.naturalWidth, 0, 'The image decoded successfully');
+
+    // Keep every matching entry, including any premature cache entry.
+    const entries = performance.getEntriesByName(url.href, 'resource');
+    assert_equals(entries.length, 1, 'One entry is reported for the image');
+    const entry = entries[0];
+    assert_equals(entry.initiatorType, 'img');
+    assert_greater_than(entry.duration, 0, 'The network load has a duration');
+    assert_greater_than(entry.responseStart, 0, 'Response headers were received');
+    assert_greater_than(entry.responseEnd, entry.responseStart,
+                        'Response end includes the delayed response body');
+    assert_greater_than(entry.transferSize, 0, 'The image was fetched over the network');
+    assert_greater_than(entry.encodedBodySize, 0, 'The response body is included');
+    assert_not_equals(entry.nextHopProtocol, '', 'The network protocol is recorded');
+  }, `A network-loaded ${mode} image reports completed Resource Timing`);
+}
+</script>
